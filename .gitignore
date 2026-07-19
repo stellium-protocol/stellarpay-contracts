@@ -1,3 +1,4 @@
 /target
 *.wasm
 .soroban
+test_snapshots/
