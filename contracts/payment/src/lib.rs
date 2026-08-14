@@ -104,7 +104,7 @@ impl PaymentContract {
         env.storage()
             .instance()
             .get(&DataKey::Payment(payment_id))
-            .expect("payment not found")
+            .unwrap_or_else(|| panic!("payment {} not found", payment_id))
     }
 
     /// Check if a payment exists and is completed.
