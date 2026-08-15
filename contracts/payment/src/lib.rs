@@ -60,6 +60,10 @@ impl PaymentContract {
         // Prevents unauthorized transfers from the sender's account.
         sender.require_auth();
 
+        // Input validation: reject invalid amounts and self-payments.
+        assert!(amount > 0, "payment amount must be greater than zero");
+        assert!(sender != recipient, "sender and recipient must be different addresses");
+
         // Generate a unique payment ID via auto-incrementing counter.
         let mut counter: u64 = env.storage().instance().get(&PAYMENT_COUNTER).unwrap_or(0);
         counter += 1;

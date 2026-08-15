@@ -57,6 +57,10 @@ impl EscrowContract {
         // or moving the buyer's tokens without their explicit approval.
         buyer.require_auth();
 
+        // Input validation: reject invalid amounts and self-escrow.
+        assert!(amount > 0, "escrow amount must be greater than zero");
+        assert!(buyer != seller, "buyer and seller must be different addresses");
+
         // Read and increment the counter to generate a unique escrow ID.
         // Uses instance storage — this counter lives only for the lifetime of
         // this contract instance (not across upgrades), which is fine because
