@@ -57,6 +57,9 @@ impl EscrowContract {
         // or moving the buyer's tokens without their explicit approval.
         buyer.require_auth();
 
+        // Input validation: ensure amount is strictly positive
+        assert!(amount > 0, "amount must be greater than zero");
+
         // Read and increment the counter to generate a unique escrow ID.
         // Uses instance storage — this counter lives only for the lifetime of
         // this contract instance (not across upgrades), which is fine because
@@ -184,3 +187,5 @@ impl EscrowContract {
             .expect("escrow not found")
     }
 }
+#[cfg(test)]
+mod test;
