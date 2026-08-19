@@ -124,3 +124,5 @@ impl PaymentContract {
             .unwrap_or(false)
     }
 }
+#[cfg(test)]
+mod test;
