@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::{testutils::Address as _, Env};
 
 #[test]
-#[should_panic(expected = "amount must be greater than zero")]
+#[should_panic(expected = "escrow amount must be greater than zero")]
 fn test_create_escrow_zero_amount() {
     let env = Env::default();
     env.mock_all_auths();

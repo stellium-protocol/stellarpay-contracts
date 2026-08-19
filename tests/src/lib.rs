@@ -241,4 +241,184 @@ mod tests {
         let client = stellium_payment::PaymentContractClient::new(&env, &contract_id);
         assert!(!client.verify(&999));
     }
+
+    // ========================================
+    // Escrow edge case tests
+    // ========================================
+
+    #[test]
+    #[should_panic(expected = "escrow amount must be greater than zero")]
+    fn test_escrow_zero_amount() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        client.create(&buyer, &seller, &0, &asset, &86400);
+    }
+
+    #[test]
+    fn test_escrow_zero_timeout_immediate_refund() {
+        // timeout=0 means the escrow is immediately refundable
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &0);
+
+        // Should be immediately refundable without advancing the ledger
+        client.refund(&escrow_id);
+
+        let escrow = client.get_escrow(&escrow_id);
+        assert!(escrow.refunded);
+        assert_eq!(token.balance(&buyer), 1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "buyer and seller must be different addresses")]
+    fn test_escrow_same_buyer_and_seller() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        // buyer and seller are the same address
+        client.create(&buyer, &buyer, &1000, &asset, &86400);
+    }
+
+    #[test]
+    #[should_panic(expected = "already refunded")]
+    fn test_escrow_duplicate_refund() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+
+        // Advance time past timeout
+        env.ledger().with_mut(|li| {
+            li.timestamp += 86401;
+        });
+
+        client.refund(&escrow_id);
+        // Second refund should panic
+        client.refund(&escrow_id);
+    }
+
+    // ========================================
+    // Payment edge case tests
+    // ========================================
+
+    #[test]
+    #[should_panic(expected = "payment amount must be greater than zero")]
+    fn test_payment_zero_amount() {
+        let (env, contract_id) = setup_payment_env();
+        env.mock_all_auths();
+
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&sender, &500);
+
+        let client = stellium_payment::PaymentContractClient::new(&env, &contract_id);
+        let metadata = soroban_sdk::Bytes::from_array(&env, &[]);
+        client.pay(&sender, &recipient, &0, &asset, &metadata);
+    }
+
+    #[test]
+    fn test_payment_empty_metadata() {
+        let (env, contract_id) = setup_payment_env();
+        env.mock_all_auths();
+
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, token) = create_token(&env, &admin);
+
+        stellar.mint(&sender, &500);
+
+        let client = stellium_payment::PaymentContractClient::new(&env, &contract_id);
+        let metadata = soroban_sdk::Bytes::from_array(&env, &[]);
+        let payment_id = client.pay(&sender, &recipient, &500, &asset, &metadata);
+
+        let payment = client.get_payment(&payment_id);
+        assert_eq!(payment.metadata.len(), 0);
+        assert!(payment.completed);
+        assert_eq!(token.balance(&recipient), 500);
+    }
+
+    #[test]
+    #[should_panic(expected = "sender and recipient must be different addresses")]
+    fn test_payment_self_payment() {
+        let (env, contract_id) = setup_payment_env();
+        env.mock_all_auths();
+
+        let sender = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&sender, &500);
+
+        let client = stellium_payment::PaymentContractClient::new(&env, &contract_id);
+        let metadata = soroban_sdk::Bytes::from_array(&env, &[]);
+        // sender and recipient are the same address
+        client.pay(&sender, &sender, &500, &asset, &metadata);
+    }
+
+    #[test]
+    fn test_payment_multiple_payments_increment_id() {
+        let (env, contract_id) = setup_payment_env();
+        env.mock_all_auths();
+
+        let sender = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&sender, &1000);
+
+        let client = stellium_payment::PaymentContractClient::new(&env, &contract_id);
+        let metadata = soroban_sdk::Bytes::from_array(&env, &[]);
+
+        let id1 = client.pay(&sender, &recipient, &100, &asset, &metadata);
+        let id2 = client.pay(&sender, &recipient, &200, &asset, &metadata);
+        let id3 = client.pay(&sender, &recipient, &300, &asset, &metadata);
+
+        // IDs should be sequential
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
+        assert_eq!(id3, 3);
+
+        // Each payment should be independently verifiable
+        assert!(client.verify(&id1));
+        assert!(client.verify(&id2));
+        assert!(client.verify(&id3));
+    }
 }

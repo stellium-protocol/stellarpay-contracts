@@ -57,8 +57,9 @@ impl EscrowContract {
         // or moving the buyer's tokens without their explicit approval.
         buyer.require_auth();
 
-        // Input validation: ensure amount is strictly positive
-        assert!(amount > 0, "amount must be greater than zero");
+        // Input validation: reject invalid amounts and self-escrow.
+        assert!(amount > 0, "escrow amount must be greater than zero");
+        assert!(buyer != seller, "buyer and seller must be different addresses");
 
         // Read and increment the counter to generate a unique escrow ID.
         // Uses instance storage — this counter lives only for the lifetime of
@@ -112,12 +113,12 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::Escrow(escrow_id))
-            .expect("escrow not found");
+            .unwrap_or_else(|| panic!("escrow {} not found", escrow_id));
 
         // Only the buyer (the party who deposited funds) can authorize release.
         escrow.buyer.require_auth();
-        assert!(!escrow.released, "already released");
-        assert!(!escrow.refunded, "already refunded");
+        assert!(!escrow.released, "escrow {} is already released", escrow_id);
+        assert!(!escrow.refunded, "escrow {} is already refunded", escrow_id);
 
         escrow.released = true;
         env.storage()
@@ -145,18 +146,21 @@ impl EscrowContract {
             .storage()
             .instance()
             .get(&DataKey::Escrow(escrow_id))
-            .expect("escrow not found");
+            .unwrap_or_else(|| panic!("escrow {} not found", escrow_id));
 
         escrow.buyer.require_auth();
-        assert!(!escrow.released, "already released");
-        assert!(!escrow.refunded, "already refunded");
+        assert!(!escrow.released, "escrow {} is already released", escrow_id);
+        assert!(!escrow.refunded, "escrow {} is already refunded", escrow_id);
 
         // Compare current ledger time against the stored absolute timeout.
         // The timeout was computed at creation as (creation_time + relative_timeout),
         // so this check ensures enough real time has passed before refunding.
+        let current_time = env.ledger().timestamp();
         assert!(
-            env.ledger().timestamp() >= escrow.timeout,
-            "timeout not reached"
+            current_time >= escrow.timeout,
+            "escrow {} timeout not reached: {}s remaining",
+            escrow_id,
+            escrow.timeout - current_time
         );
 
         escrow.refunded = true;
@@ -184,7 +188,7 @@ impl EscrowContract {
         env.storage()
             .instance()
             .get(&DataKey::Escrow(escrow_id))
-            .expect("escrow not found")
+            .unwrap_or_else(|| panic!("escrow {} not found", escrow_id))
     }
 }
 #[cfg(test)]
