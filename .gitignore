@@ -2,3 +2,5 @@
 *.wasm
 .soroban
 test_snapshots/
+config.bat
+node_modules

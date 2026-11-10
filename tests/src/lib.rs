@@ -44,7 +44,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         let escrow = client.get_escrow(&escrow_id);
         assert_eq!(escrow.id, escrow_id);
@@ -54,6 +54,8 @@ mod tests {
         assert_eq!(escrow.asset, asset);
         assert!(!escrow.released);
         assert!(!escrow.refunded);
+        assert_eq!(escrow.arbitrator, None);
+        assert!(!escrow.disputed);
     }
 
     #[test]
@@ -69,7 +71,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         assert_eq!(token.balance(&seller), 0);
 
@@ -94,7 +96,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         env.ledger().with_mut(|li| {
             li.timestamp += 86401;
@@ -122,7 +124,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         client.release(&escrow_id);
         client.release(&escrow_id);
@@ -142,7 +144,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         client.refund(&escrow_id);
     }
@@ -161,7 +163,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         client.release(&escrow_id);
         client.refund(&escrow_id);
@@ -182,7 +184,7 @@ mod tests {
         let asset = Address::generate(&env);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        client.create(&buyer, &seller, &1000, &asset, &86400);
+        client.create(&buyer, &seller, &1000, &asset, &86400, &None);
     }
 
     // ========================================
@@ -260,7 +262,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        client.create(&buyer, &seller, &0, &asset, &86400);
+        client.create(&buyer, &seller, &0, &asset, &86400, &None);
     }
 
     #[test]
@@ -277,7 +279,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &0);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &0, &None);
 
         // Should be immediately refundable without advancing the ledger
         client.refund(&escrow_id);
@@ -301,7 +303,7 @@ mod tests {
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
         // buyer and seller are the same address
-        client.create(&buyer, &buyer, &1000, &asset, &86400);
+        client.create(&buyer, &buyer, &1000, &asset, &86400, &None);
     }
 
     #[test]
@@ -318,7 +320,7 @@ mod tests {
         stellar.mint(&buyer, &1000);
 
         let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
-        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
 
         // Advance time past timeout
         env.ledger().with_mut(|li| {
@@ -420,5 +422,409 @@ mod tests {
         assert!(client.verify(&id1));
         assert!(client.verify(&id2));
         assert!(client.verify(&id3));
+    }
+
+    // ========================================
+    // Dispute and resolution tests
+    // ========================================
+
+    #[test]
+    fn test_create_escrow_with_arbitrator() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator.clone()),
+        );
+
+        let escrow = client.get_escrow(&escrow_id);
+        assert_eq!(escrow.id, escrow_id);
+        assert_eq!(escrow.buyer, buyer);
+        assert_eq!(escrow.seller, seller);
+        assert_eq!(escrow.amount, 1000);
+        assert_eq!(escrow.asset, asset);
+        assert!(!escrow.released);
+        assert!(!escrow.refunded);
+        assert_eq!(escrow.arbitrator, Some(arbitrator));
+        assert!(!escrow.disputed);
+    }
+
+    #[test]
+    fn test_dispute_escrow() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.dispute(&escrow_id);
+
+        let escrow = client.get_escrow(&escrow_id);
+        assert!(escrow.disputed);
+        assert!(!escrow.released);
+        assert!(!escrow.refunded);
+    }
+
+    #[test]
+    #[should_panic(expected = "is disputed")]
+    fn test_dispute_blocks_release() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.dispute(&escrow_id);
+        // Release must fail while disputed
+        client.release(&escrow_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "is disputed")]
+    fn test_dispute_blocks_refund() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.dispute(&escrow_id);
+
+        // Advance ledger time past timeout
+        env.ledger().with_mut(|li| {
+            li.timestamp += 86401;
+        });
+
+        // Refund must fail while disputed even after timeout
+        client.refund(&escrow_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "no arbitrator configured")]
+    fn test_dispute_without_arbitrator_panics() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(&buyer, &seller, &1000, &asset, &86400, &None);
+
+        client.dispute(&escrow_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "already disputed")]
+    fn test_duplicate_dispute_panics() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.dispute(&escrow_id);
+        client.dispute(&escrow_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "already released")]
+    fn test_dispute_after_release_panics() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.release(&escrow_id);
+        client.dispute(&escrow_id);
+    }
+
+    #[test]
+    #[should_panic(expected = "already refunded")]
+    fn test_dispute_after_refund_panics() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        env.ledger().with_mut(|li| {
+            li.timestamp += 86401;
+        });
+
+        client.refund(&escrow_id);
+        client.dispute(&escrow_id);
+    }
+
+    #[test]
+    fn test_resolve_to_seller() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        assert_eq!(token.balance(&seller), 0);
+
+        client.dispute(&escrow_id);
+        client.resolve(&escrow_id, &true);
+
+        let escrow = client.get_escrow(&escrow_id);
+        assert!(escrow.disputed);
+        assert!(escrow.released);
+        assert!(!escrow.refunded);
+        assert_eq!(token.balance(&seller), 1000);
+        assert_eq!(token.balance(&buyer), 0);
+        assert_eq!(token.balance(&contract_id), 0);
+    }
+
+    #[test]
+    fn test_resolve_to_buyer() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.dispute(&escrow_id);
+        client.resolve(&escrow_id, &false);
+
+        let escrow = client.get_escrow(&escrow_id);
+        assert!(escrow.disputed);
+        assert!(!escrow.released);
+        assert!(escrow.refunded);
+        assert_eq!(token.balance(&buyer), 1000);
+        assert_eq!(token.balance(&seller), 0);
+        assert_eq!(token.balance(&contract_id), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not disputed")]
+    fn test_resolve_not_disputed_panics() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.resolve(&escrow_id, &true);
+    }
+
+    #[test]
+    #[should_panic(expected = "already released")]
+    fn test_resolve_duplicate_panics() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let arbitrator = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        let escrow_id = client.create(
+            &buyer,
+            &seller,
+            &1000,
+            &asset,
+            &86400,
+            &Some(arbitrator),
+        );
+
+        client.dispute(&escrow_id);
+        client.resolve(&escrow_id, &true);
+        // Second resolve should panic
+        client.resolve(&escrow_id, &true);
+    }
+
+    #[test]
+    #[should_panic(expected = "arbitrator cannot be buyer")]
+    fn test_escrow_arbitrator_same_as_buyer() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        client.create(&buyer, &seller, &1000, &asset, &86400, &Some(buyer.clone()));
+    }
+
+    #[test]
+    #[should_panic(expected = "arbitrator cannot be seller")]
+    fn test_escrow_arbitrator_same_as_seller() {
+        let (env, contract_id) = setup_escrow_env();
+        env.mock_all_auths();
+
+        let buyer = Address::generate(&env);
+        let seller = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let (asset, stellar, _token) = create_token(&env, &admin);
+
+        stellar.mint(&buyer, &1000);
+
+        let client = stellium_escrow::EscrowContractClient::new(&env, &contract_id);
+        client.create(&buyer, &seller, &1000, &asset, &86400, &Some(seller.clone()));
     }
 }

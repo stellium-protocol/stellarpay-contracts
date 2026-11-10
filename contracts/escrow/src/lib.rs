@@ -33,6 +33,8 @@ pub struct Escrow {
     pub timeout: u64,
     pub released: bool,
     pub refunded: bool,
+    pub arbitrator: Option<Address>,
+    pub disputed: bool,
 }
 
 #[contract]
@@ -43,6 +45,7 @@ impl EscrowContract {
     /// Create a new escrow. Transfers `amount` of `asset` from the buyer into
     /// this contract, where it is held until release or refund.
     ///
+    /// Accepts an optional third-party arbitrator address for dispute resolution.
     /// Returns the auto-generated escrow ID.
     pub fn create(
         env: Env,
@@ -51,6 +54,7 @@ impl EscrowContract {
         amount: i128,
         asset: Address,
         timeout: u64,
+        arbitrator: Option<Address>,
     ) -> u64 {
         // Auth check: ensures the transaction is signed by the buyer.
         // This prevents anyone else from creating escrows on the buyer's behalf
@@ -60,6 +64,11 @@ impl EscrowContract {
         // Input validation: reject invalid amounts and self-escrow.
         assert!(amount > 0, "escrow amount must be greater than zero");
         assert!(buyer != seller, "buyer and seller must be different addresses");
+
+        if let Some(ref arb) = arbitrator {
+            assert!(arb != &buyer, "arbitrator cannot be buyer");
+            assert!(arb != &seller, "arbitrator cannot be seller");
+        }
 
         // Read and increment the counter to generate a unique escrow ID.
         // Uses instance storage — this counter lives only for the lifetime of
@@ -85,6 +94,8 @@ impl EscrowContract {
             timeout: timeout_timestamp,
             released: false,
             refunded: false,
+            arbitrator,
+            disputed: false,
         };
 
         // Instance storage is used here (not persistent) because escrow records
@@ -108,6 +119,7 @@ impl EscrowContract {
 
     /// Release escrow funds to the seller. Only the buyer can call this,
     /// confirming they are satisfied with the transaction.
+    /// Release is blocked while a dispute is active.
     pub fn release(env: Env, escrow_id: u64) {
         let mut escrow: Escrow = env
             .storage()
@@ -117,6 +129,7 @@ impl EscrowContract {
 
         // Only the buyer (the party who deposited funds) can authorize release.
         escrow.buyer.require_auth();
+        assert!(!escrow.disputed, "escrow {} is disputed", escrow_id);
         assert!(!escrow.released, "escrow {} is already released", escrow_id);
         assert!(!escrow.refunded, "escrow {} is already refunded", escrow_id);
 
@@ -141,6 +154,7 @@ impl EscrowContract {
 
     /// Refund escrow funds back to the buyer. Only callable after the timeout
     /// has passed, protecting the seller from premature refunds.
+    /// Refund is blocked while a dispute is active.
     pub fn refund(env: Env, escrow_id: u64) {
         let mut escrow: Escrow = env
             .storage()
@@ -149,6 +163,7 @@ impl EscrowContract {
             .unwrap_or_else(|| panic!("escrow {} not found", escrow_id));
 
         escrow.buyer.require_auth();
+        assert!(!escrow.disputed, "escrow {} is disputed", escrow_id);
         assert!(!escrow.released, "escrow {} is already released", escrow_id);
         assert!(!escrow.refunded, "escrow {} is already refunded", escrow_id);
 
@@ -179,6 +194,80 @@ impl EscrowContract {
         env.events().publish(
             (symbol_short!("escrow"), symbol_short!("refunded")),
             (escrow_id, escrow.buyer, escrow.amount),
+        );
+    }
+
+    /// Raise a dispute on an escrow. Callable before release or refund.
+    /// Blocks both release and refund until resolved by the designated arbitrator.
+    pub fn dispute(env: Env, escrow_id: u64) {
+        let mut escrow: Escrow = env
+            .storage()
+            .instance()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("escrow {} not found", escrow_id));
+
+        assert!(
+            escrow.arbitrator.is_some(),
+            "cannot dispute escrow {}: no arbitrator configured",
+            escrow_id
+        );
+        assert!(!escrow.released, "escrow {} is already released", escrow_id);
+        assert!(!escrow.refunded, "escrow {} is already refunded", escrow_id);
+        assert!(!escrow.disputed, "escrow {} is already disputed", escrow_id);
+
+        escrow.disputed = true;
+        env.storage()
+            .instance()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("disputed")),
+            (escrow_id, escrow.buyer, escrow.seller),
+        );
+    }
+
+    /// Resolve an active dispute. Only callable by the designated arbitrator.
+    /// Transfers funds to the seller if `release_to_seller` is true, or refunds the buyer if false.
+    pub fn resolve(env: Env, escrow_id: u64, release_to_seller: bool) {
+        let mut escrow: Escrow = env
+            .storage()
+            .instance()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("escrow {} not found", escrow_id));
+
+        assert!(escrow.disputed, "escrow {} is not disputed", escrow_id);
+        assert!(!escrow.released, "escrow {} is already released", escrow_id);
+        assert!(!escrow.refunded, "escrow {} is already refunded", escrow_id);
+
+        let arbitrator = escrow
+            .arbitrator
+            .as_ref()
+            .unwrap_or_else(|| panic!("escrow {} has no arbitrator configured", escrow_id));
+        arbitrator.require_auth();
+
+        let recipient = if release_to_seller {
+            escrow.released = true;
+            escrow.seller.clone()
+        } else {
+            escrow.refunded = true;
+            escrow.buyer.clone()
+        };
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        // Transfer the held funds from the contract to the recipient.
+        let client = soroban_sdk::token::Client::new(&env, &escrow.asset);
+        client.transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &escrow.amount,
+        );
+
+        env.events().publish(
+            (symbol_short!("escrow"), symbol_short!("resolved")),
+            (escrow_id, recipient, escrow.amount),
         );
     }
 
